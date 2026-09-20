@@ -1,0 +1,90 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #f7f7f7;
+  background: #111214;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { margin: 0; width: 100%; min-height: 100%; }
+body { overflow-x: hidden; overflow-y: auto; }
+button { font: inherit; }
+
+.shell {
+  min-height: 100vh;
+  padding: 22px;
+  background:
+    radial-gradient(circle at 90% 0%, rgba(255,255,255,.07), transparent 34%),
+    linear-gradient(180deg, #17181b 0%, #101113 100%);
+}
+
+header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.eyebrow { font-size: 10px; letter-spacing: .18em; color: #92969d; font-weight: 700; }
+h1 { margin: 2px 0 0; font-size: 27px; line-height: 1; letter-spacing: -.03em; }
+
+.refresh-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-width: 128px; height: 42px; padding: 0 12px; border-radius: 11px;
+  border: 1px solid #414650; background: linear-gradient(180deg, #2d3139, #23262d); color: #edf0f5;
+  cursor: pointer; font-size: 12px; font-weight: 600; line-height: 1;
+  box-shadow: inset 0 1px 0 #ffffff09, 0 2px 5px #00000020;
+  transition: background .15s, border-color .15s, color .15s, transform .15s;
+}
+.refresh-button:hover:not(:disabled) { background: #353b45; border-color: #697485; }
+.refresh-button:active:not(:disabled) { transform: translateY(1px); background: #20242b; }
+.refresh-button:disabled { cursor: wait; color: #afb8c6; }
+.refresh-icon { width: 17px; height: 17px; flex: 0 0 17px; }
+.refresh-check { display: none; }
+.refresh-button[data-state="loading"] .refresh-icon { animation: spin .85s linear infinite; }
+.refresh-button[data-state="success"] { color: #b8dfc7; border-color: #496657; }
+.refresh-button[data-state="success"] .refresh-arrows { display: none; }
+.refresh-button[data-state="success"] .refresh-check { display: block; }
+.refresh-button[data-state="error"] { color: #e4b96c; border-color: #6c5737; }
+@media (prefers-reduced-motion: reduce) {
+  .refresh-button { transition: none; }
+  .refresh-button[data-state="loading"] .refresh-icon { animation: none; }
+}
+.providers { display: flex; gap: 4px; padding: 4px; margin-bottom: 14px; border: 1px solid #34373d; border-radius: 10px; }
+.providers button { flex: 1; padding: 7px; border: 0; border-radius: 6px; background: transparent; color: #92969d; cursor: pointer; font-size: 12px; }
+.providers button[aria-pressed="true"] { background: #30333a; color: #fff; }
+.cursor-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+.cursor-actions button { border: 1px solid #34373d; border-radius: 7px; padding: 6px 9px; background: #222429; color: #c4c7cc; cursor: pointer; font-size: 11px; }
+.cursor-actions button:disabled { opacity: .55; cursor: default; }
+button:focus-visible { outline: 2px solid #b9caee; outline-offset: 2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.status { font-size: 12px; margin-bottom: 14px; min-height: 17px; overflow-wrap: anywhere; }
+.status.muted { color: #8d9198; }
+.status.ok { color: #aeb4bc; }
+.status.warning { color: #e4b96c; }
+.status.error { color: #ff8b8b; }
+
+.meters { display: grid; gap: 10px; }
+.meter-card {
+  border: 1px solid #2d3035;
+  background: rgba(255,255,255,.035);
+  border-radius: 14px;
+  padding: 14px;
+}
+.meter-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 12px; }
+.meter-label { font-size: 13px; color: #c4c7cc; }
+.meter-top strong { font-size: 14px; }
+.bar { height: 8px; border-radius: 999px; background: #292c31; overflow: hidden; margin: 11px 0 9px; }
+.fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, #e6e6e6, #fff); transition: width .35s ease; }
+.reset { font-size: 11px; color: #858a92; }
+
+.credits {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between;
+  margin-top: 10px; border-top: 1px solid #282b30; padding: 13px 2px 0;
+  font-size: 12px; color: #a9adb4;
+}
+.credits strong { color: #fff; }
+.hidden { display: none; }
+.empty { padding: 16px; border: 1px dashed #34373d; border-radius: 12px; color: #9a9ea5; font-size: 12px; line-height: 1.5; }
+code { color: #d9dce1; }
+
+footer {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px;
+  margin-top: 15px; color: #696e76; font-size: 10px; text-transform: capitalize;
+}

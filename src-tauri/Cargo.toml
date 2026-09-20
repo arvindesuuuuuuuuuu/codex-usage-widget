@@ -1,0 +1,25 @@
+[package]
+name = "codex-usage-widget"
+version = "0.1.0"
+description = "A small cross-platform Codex usage widget"
+authors = ["Codex Usage Widget contributors"]
+edition = "2021"
+
+[lib]
+name = "codex_usage_widget_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+time = { version = "0.3", features = ["parsing"] }
+base64 = "0.22"
+rusqlite = { version = "0.38", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"

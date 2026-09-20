@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "widget-events",
+  "description": "Local usage windows can listen for usage and refresh updates.",
+  "windows": ["main", "status-bar"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}
