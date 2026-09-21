@@ -39,7 +39,7 @@ Codex can occasionally return only one rate-limit window for an account/model. T
 
 ## Minimized status bar
 
-Click the normal window's **Minimize** button to show a 500 × 64 status bar at the top of that monitor's work area. It stays above other windows and displays the selected provider's first two usage allowances. Usage continues refreshing every five minutes; loading and errors are shown instead of stale percentages.
+Click the window **Minimize** button to show a 500 × 64 status bar at the top of that monitor's work area. It stays above other windows and displays the selected provider's first two usage allowances. Usage continues refreshing every five minutes; loading and errors are shown instead of stale percentages.
 
 While minimized, the app's taskbar button is hidden and its notification-area tray icon remains available (Windows may put it under the hidden-icons arrow). Click the usage bar or the tray icon to restore the full widget, including its taskbar button, at the original size and position. The tray menu also offers Show, Refresh, and Quit. Closing the main window still hides it to the tray. The status bar only displays the main widget's data and does not start another provider connection.
 

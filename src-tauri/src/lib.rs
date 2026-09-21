@@ -253,6 +253,7 @@ pub fn run() {
         .manage(CacheState(Mutex::new(None)))
         .manage(cursor::CursorCache::default())
         .manage(status_bar::StatusState::default())
+        .manage(status_bar::CompactState::default())
         .invoke_handler(tauri::generate_handler![get_codex_usage, cursor::get_cursor_usage, cursor::connect_cursor, cursor::disconnect_cursor, status_bar::publish_usage_summary, status_bar::get_usage_summary, status_bar::restore_usage_window])
         .setup(|app| {
             let show = MenuItemBuilder::with_id("show", "Show Code Usage").build(app)?;
@@ -293,13 +294,15 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 let window_for_close = window.clone();
+                let handle = app.handle().clone();
                 window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
-                        let _ = window_for_close.hide();
+                        let _ = status_bar::hide_to_tray(&handle, &window_for_close);
                     }
                 });
             }
+            status_bar::hook_native_minimize(app.handle());
             status_bar::watch(app.handle().clone());
             Ok(())
         })
