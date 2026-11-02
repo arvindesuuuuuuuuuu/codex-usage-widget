@@ -28,20 +28,31 @@ Use the provider buttons to switch accounts' usage displays. Each provider refre
 
 - 5-hour Codex allowance, when the account returns a 300-minute window
 - Weekly allowance, when the account returns a 10,080-minute window
-- Reset times
-- Credits/balance when Codex returns them
-- ChatGPT plan type when available
+- Relative reset countdowns (e.g. `Resets in 3h 48m` with local clock time)
+- Free rate-limit reset credits badge when available (e.g. `🎁 2 free rate-limit resets available`)
+- Color-coded progress meters (green for healthy, amber for warning under 40%, red for critical under 15%)
+- Cursor models and other models allowances with accurate decimal-ratio scaling
+- Cursor total request counts and bonus breakdown (e.g. `1,952 / 2,000 remaining · 48 used`)
+- On-demand spend tracking in USD with limit thresholds
+- Plan type tags (e.g. `CHATGPT PLUS`, `CURSOR PRO`)
 - System tray icon with Show / Refresh / Quit
-- Minimize to a compact always-on-top usage bar at the top center of the current monitor
+- One-click **Compact** button in the header or OS minimize button to switch to the always-on-top status bar
 - Automatic refresh every 5 minutes; data is cached for 60 seconds
 
 Codex can occasionally return only one rate-limit window for an account/model. The widget shows exactly what `account/rateLimits/read` returns rather than inventing a missing limit.
 
 ## Minimized status bar
 
-Click the window **Minimize** button to show a 500 × 64 status bar at the top of that monitor's work area. It stays above other windows and displays the selected provider's first two usage allowances. Usage continues refreshing every five minutes; loading and errors are shown instead of stale percentages.
+Click the **Compact** button in the header or the window **Minimize** button to show a floating status bar at the top of that monitor's work area. It stays above other windows and displays the selected provider's first two usage allowances with color-coded status indicators. Usage continues refreshing every five minutes; loading and errors are shown instead of stale percentages.
 
-While minimized, the app's taskbar button is hidden and its notification-area tray icon remains available (Windows may put it under the hidden-icons arrow). Click the usage bar or the tray icon to restore the full widget, including its taskbar button, at the original size and position. The tray menu also offers Show, Refresh, and Quit. Closing the main window still hides it to the tray. The status bar only displays the main widget's data and does not start another provider connection.
+- **Non-clickable by default**: Accidental clicks on the status bar do not pop up the dashboard. (You can restore the dashboard via the system tray icon, right-clicking the status bar, or enabling click-to-open in Settings).
+- **Hover opacity fade**: When your mouse enters the status bar, its opacity decreases automatically so you can see and interact with tabs or windows directly behind it.
+- **Settings customization**: Click the gear (⚙️) icon in the main window header to configure:
+  - **Default Opacity**: Slider (20% – 100%) for normal visibility.
+  - **Hover Opacity**: Slider (5% – 100%) for transparency when the mouse hovers over it.
+  - **Draggable Status Bar**: Checkbox to freely drag and reposition the status bar anywhere on your screen.
+  - **Click to Open Dashboard**: Checkbox to show the expand button and restore the main window upon clicking.
+  - **Click-Through Status Bar**: Checkbox to let all mouse clicks pass completely through to windows or tabs underneath.
 
 ## Requirements
 
@@ -93,13 +104,50 @@ npm install
 npm run tauri build
 ```
 
-Tauri writes the packages under:
+The build produces:
+- Standalone release binary: `src-tauri/target/release/codex-usage-widget`
+- Debian package: `src-tauri/target/release/bundle/deb/Codex Usage Widget_0.1.1_amd64.deb`
+- RPM package: `src-tauri/target/release/bundle/rpm/Codex Usage Widget-0.1.1-1.x86_64.rpm`
 
-```text
-src-tauri/target/release/bundle/
+## Installing on Ubuntu
+
+### Option 1: Install Debian package (system-wide)
+
+```bash
+sudo apt install ./"src-tauri/target/release/bundle/deb/Codex Usage Widget_0.1.1_amd64.deb"
+```
+*(or using dpkg: `sudo dpkg -i "src-tauri/target/release/bundle/deb/Codex Usage Widget_0.1.1_amd64.deb"`)*
+
+This installs the binary to `/usr/bin/codex-usage-widget` and sets up the desktop launcher and application icons automatically.
+
+### Option 2: Standalone binary install (user-level, no root required)
+
+Copy the compiled binary to your user bin directory:
+
+```bash
+mkdir -p ~/.local/bin ~/.local/share/applications ~/.local/share/icons/hicolor/512x512/apps
+cp src-tauri/target/release/codex-usage-widget ~/.local/bin/
+cp src-tauri/icons/icon512.png ~/.local/share/icons/hicolor/512x512/apps/codex-usage-widget.png
 ```
 
-Build Windows packages on Windows and Linux packages on Linux for the simplest setup.
+Create a desktop entry at `~/.local/share/applications/codex-usage-widget.desktop`:
+
+```ini
+[Desktop Entry]
+Name=Codex Usage Widget
+Comment=Codex and Cursor Usage Tracker
+Exec=sh -c '"$HOME"/.local/bin/codex-usage-widget'
+Icon=codex-usage-widget
+Terminal=false
+Type=Application
+Categories=Utility;Development;
+StartupWMClass=codex-usage-widget
+```
+
+Then refresh the desktop database:
+```bash
+update-desktop-database ~/.local/share/applications
+```
 
 ## How the usage read works
 

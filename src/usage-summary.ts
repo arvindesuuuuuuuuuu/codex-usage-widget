@@ -1,16 +1,43 @@
+export type SummaryAllowance = {
+  label: string;
+  leftPercent: number;
+  resetsAt?: number | null;
+  subtext?: string | null;
+};
+
 export type Summary = {
   revision: number;
   provider: string;
   state: 'loading' | 'ready' | 'error';
   message: string;
-  windows: { label: string; leftPercent: number }[];
+  windows: SummaryAllowance[];
+  planType?: string | null;
+  resetCreditsCount?: number | null;
 };
 
 // Preserve order when several UI changes occur while the native module loads.
 let publishing = Promise.resolve();
-export function publishSummary(provider: 'codex' | 'cursor', state: Summary['state'], windows: Summary['windows'], message: string) {
+export function publishSummary(
+  provider: 'codex' | 'cursor',
+  state: Summary['state'],
+  windows: SummaryAllowance[],
+  message: string,
+  extra?: { planType?: string | null; resetCreditsCount?: number | null }
+) {
   if (!('__TAURI_INTERNALS__' in window)) return;
-  const summary = { provider: provider === 'cursor' ? 'Cursor' : 'Codex', state, windows: windows.slice(0, 8).map(({ label, leftPercent }) => ({ label, leftPercent })), message: message.slice(0, 4096) };
+  const summary = {
+    provider: provider === 'cursor' ? 'Cursor' : 'Codex',
+    state,
+    windows: windows.slice(0, 8).map(w => ({
+      label: w.label,
+      leftPercent: w.leftPercent,
+      resetsAt: w.resetsAt ?? null,
+      subtext: w.subtext ?? null,
+    })),
+    message: message.slice(0, 4096),
+    planType: extra?.planType ?? null,
+    resetCreditsCount: extra?.resetCreditsCount ?? null,
+  };
   publishing = publishing.then(async () => {
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('publish_usage_summary', { summary });

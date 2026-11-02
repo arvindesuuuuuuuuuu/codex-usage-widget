@@ -37,6 +37,13 @@ struct Credits {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ResetCredit {
+    available_count: u64,
+    description: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct UsageSnapshot {
     source: String,
     plan_type: Option<String>,
@@ -46,6 +53,8 @@ struct UsageSnapshot {
     other_windows: Vec<UsageWindow>,
     credits: Option<Credits>,
     ordinary_usage_allowed: Option<bool>,
+    reset_credits: Option<ResetCredit>,
+    account_id: Option<String>,
 }
 
 struct CacheState(Mutex<Option<UsageSnapshot>>);
@@ -57,31 +66,136 @@ fn now_epoch() -> u64 {
         .as_secs()
 }
 
-fn spawn_codex_app_server() -> Result<Child, String> {
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-        // npm installs often expose codex.cmd. Let cmd.exe resolve either that or a native codex.exe.
-        let mut cmd = Command::new("cmd.exe");
-        cmd.args(["/D", "/S", "/C", "codex app-server --listen stdio://"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        return cmd.spawn().map_err(|e| format!("Could not start Codex: {e}"));
+fn find_codex_binary() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("CODEX_PATH") {
+        let pb = std::path::PathBuf::from(path);
+        if pb.is_file() {
+            return pb;
+        }
     }
 
     #[cfg(not(target_os = "windows"))]
-    {
-        let mut cmd = Command::new("codex");
-        cmd.args(["app-server", "--listen", "stdio://"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        cmd.spawn().map_err(|e| format!("Could not start Codex: {e}"))
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        let candidates = [
+            home.join(".codex/plugins/.plugin-appserver/codex"),
+            home.join(".local/bin/codex"),
+            home.join(".cargo/bin/codex"),
+            std::path::PathBuf::from("/usr/local/bin/codex"),
+            std::path::PathBuf::from("/usr/bin/codex"),
+            std::path::PathBuf::from("/snap/bin/codex"),
+        ];
+        for candidate in candidates {
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
     }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let p = std::path::PathBuf::from(local_app_data).join("Programs\\codex\\codex.exe");
+            if p.is_file() {
+                return p;
+            }
+        }
+        if let Some(app_data) = std::env::var_os("APPDATA") {
+            let p = std::path::PathBuf::from(app_data).join("npm\\codex.cmd");
+            if p.is_file() {
+                return p;
+            }
+        }
+    }
+
+    std::path::PathBuf::from("codex")
+}
+
+#[cfg(target_os = "linux")]
+fn sync_snap_codex_auth_if_needed() {
+    let Some(home) = std::env::var_os("HOME") else { return; };
+    let home = std::path::PathBuf::from(home);
+    let dot_codex_auth = home.join(".codex/auth.json");
+    if !dot_codex_auth.is_file() {
+        return;
+    }
+    let snap_dir = home.join("snap/codex");
+    if !snap_dir.is_dir() {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(&snap_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let snap_auth = path.join("auth.json");
+                let should_copy = match (dot_codex_auth.metadata(), snap_auth.metadata()) {
+                    (Ok(src_meta), Ok(dst_meta)) => {
+                        src_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)
+                            > dst_meta.modified().unwrap_or(SystemTime::UNIX_EPOCH)
+                    }
+                    (Ok(_), Err(_)) => true,
+                    _ => false,
+                };
+                if should_copy {
+                    let _ = std::fs::copy(&dot_codex_auth, &snap_auth);
+                }
+            }
+        }
+    }
+}
+
+fn spawn_codex_app_server() -> Result<(Child, std::sync::Arc<Mutex<String>>), String> {
+    #[cfg(target_os = "linux")]
+    sync_snap_codex_auth_if_needed();
+
+    let binary = find_codex_binary();
+    let binary_str = binary.to_string_lossy().to_string();
+
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/D", "/S", "/C", &format!("\"{binary_str}\" app-server --listen stdio://")])
+            .creation_flags(CREATE_NO_WINDOW);
+        cmd
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut cmd = Command::new(&binary);
+        cmd.args(["app-server", "--listen", "stdio://"]);
+        cmd
+    };
+
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| {
+        format!("Could not start Codex ({binary_str}): {e}. Make sure `codex` is installed and on PATH.")
+    })?;
+
+    let stderr_buffer = std::sync::Arc::new(Mutex::new(String::new()));
+    if let Some(stderr) = child.stderr.take() {
+        let buffer_clone = std::sync::Arc::clone(&stderr_buffer);
+        thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Ok(mut buf) = buffer_clone.lock() {
+                    if buf.len() < 4096 {
+                        if !buf.is_empty() {
+                            buf.push('\n');
+                        }
+                        buf.push_str(&line);
+                    }
+                }
+            }
+        });
+    }
+
+    Ok((child, stderr_buffer))
 }
 
 fn send_line(stdin: &mut impl Write, value: Value) -> Result<(), String> {
@@ -99,12 +213,19 @@ fn wait_for_id(rx: &mpsc::Receiver<Value>, id: i64, timeout: Duration) -> Result
         if remaining.is_zero() {
             return Err("Timed out waiting for Codex app-server".into());
         }
-        let message = rx
-            .recv_timeout(remaining)
-            .map_err(|_| "Timed out waiting for Codex app-server".to_string())?;
+        let message = match rx.recv_timeout(remaining) {
+            Ok(msg) => msg,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                return Err("Timed out waiting for Codex app-server".into());
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("Codex process terminated unexpectedly".into());
+            }
+        };
         if message.get("id").and_then(Value::as_i64) == Some(id) {
             if let Some(error) = message.get("error") {
-                return Err(format!("Codex returned an error: {error}"));
+                let err_str = serde_json::to_string(error).unwrap_or_else(|_| error.to_string());
+                return Err(err_str);
             }
             return message
                 .get("result")
@@ -112,6 +233,30 @@ fn wait_for_id(rx: &mpsc::Receiver<Value>, id: i64, timeout: Duration) -> Result
                 .ok_or_else(|| "Codex response did not contain a result".to_string());
         }
     }
+}
+
+fn format_codex_error(raw_error: &str, stderr: &str) -> String {
+    if raw_error.contains("401 Unauthorized")
+        || raw_error.contains("Could not parse your authentication token")
+        || raw_error.contains("Please try signing in again")
+    {
+        return "Codex login expired or invalid. Open your terminal and run `codex` to sign in again.".into();
+    }
+    if raw_error.contains("429") || raw_error.contains("rate limit") {
+        return "Codex rate limit reached. Please wait a bit before refreshing.".into();
+    }
+    if let Ok(val) = serde_json::from_str::<Value>(raw_error) {
+        if let Some(msg) = val.get("message").and_then(Value::as_str) {
+            if msg.contains("401 Unauthorized") || msg.contains("Could not parse your authentication token") {
+                return "Codex login expired or invalid. Open your terminal and run `codex` to sign in again.".into();
+            }
+            return msg.to_string();
+        }
+    }
+    if !stderr.is_empty() {
+        return format!("{raw_error} (details: {stderr})");
+    }
+    raw_error.to_string()
 }
 
 fn parse_window(value: &Value) -> Option<UsageWindow> {
@@ -136,7 +281,7 @@ fn parse_window(value: &Value) -> Option<UsageWindow> {
 }
 
 fn fetch_usage() -> Result<UsageSnapshot, String> {
-    let mut child = spawn_codex_app_server()?;
+    let (mut child, stderr_buf) = spawn_codex_app_server()?;
     let mut stdin = child.stdin.take().ok_or("Codex stdin unavailable")?;
     let stdout = child.stdout.take().ok_or("Codex stdout unavailable")?;
 
@@ -149,7 +294,7 @@ fn fetch_usage() -> Result<UsageSnapshot, String> {
         }
     });
 
-    let result = (|| {
+    let result: Result<UsageSnapshot, String> = (|| {
         send_line(
             &mut stdin,
             json!({
@@ -185,7 +330,15 @@ fn fetch_usage() -> Result<UsageSnapshot, String> {
         let response = wait_for_id(&rx, 2, Duration::from_secs(20))?;
         let rate_limits = response
             .get("rateLimits")
-            .ok_or("Codex did not return rateLimits")?;
+            .filter(|v| !v.is_null())
+            .or_else(|| response.pointer("/rateLimitsByLimitId/codex"))
+            .or_else(|| {
+                response
+                    .get("rateLimitsByLimitId")
+                    .and_then(Value::as_object)
+                    .and_then(|map| map.values().next())
+            })
+            .ok_or_else(|| "Codex did not return rateLimits".to_string())?;
 
         let primary = rate_limits.get("primary").and_then(parse_window);
         let secondary = rate_limits.get("secondary").and_then(parse_window);
@@ -210,21 +363,53 @@ fn fetch_usage() -> Result<UsageSnapshot, String> {
             })
         });
 
+        let reset_credits = response
+            .pointer("/rateLimitResetCredits/availableCount")
+            .and_then(Value::as_u64)
+            .filter(|&c| c > 0)
+            .map(|available_count| {
+                let description = response
+                    .pointer("/rateLimitResetCredits/credits/0/title")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                ResetCredit {
+                    available_count,
+                    description,
+                }
+            });
+
+        let plan_type = rate_limits
+            .get("planType")
+            .and_then(Value::as_str)
+            .or_else(|| response.get("planType").and_then(Value::as_str))
+            .map(str::to_owned);
+
+        let account_id = response
+            .get("accountId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+
         Ok(UsageSnapshot {
             source: "codex app-server account/rateLimits/read".into(),
-            plan_type: rate_limits.get("planType").and_then(Value::as_str).map(str::to_owned),
+            plan_type,
             fetched_at: now_epoch(),
             five_hour,
             weekly,
             other_windows,
             credits,
             ordinary_usage_allowed: response.get("ordinaryUsageAllowed").and_then(Value::as_bool),
+            reset_credits,
+            account_id,
         })
     })();
 
     let _ = child.kill();
     let _ = child.wait();
-    result
+
+    result.map_err(|err| {
+        let stderr = stderr_buf.lock().map(|b| b.clone()).unwrap_or_default();
+        format_codex_error(&err, &stderr)
+    })
 }
 
 #[tauri::command]
@@ -254,7 +439,18 @@ pub fn run() {
         .manage(cursor::CursorCache::default())
         .manage(status_bar::StatusState::default())
         .manage(status_bar::CompactState::default())
-        .invoke_handler(tauri::generate_handler![get_codex_usage, cursor::get_cursor_usage, cursor::connect_cursor, cursor::disconnect_cursor, status_bar::publish_usage_summary, status_bar::get_usage_summary, status_bar::restore_usage_window])
+        .invoke_handler(tauri::generate_handler![
+            get_codex_usage,
+            cursor::get_cursor_usage,
+            cursor::connect_cursor,
+            cursor::disconnect_cursor,
+            status_bar::publish_usage_summary,
+            status_bar::get_usage_summary,
+            status_bar::restore_usage_window,
+            status_bar::enter_compact_mode,
+            status_bar::set_status_bar_click_through,
+            status_bar::start_status_bar_dragging
+        ])
         .setup(|app| {
             let show = MenuItemBuilder::with_id("show", "Show Code Usage").build(app)?;
             let refresh = MenuItemBuilder::with_id("refresh", "Refresh").build(app)?;
@@ -308,4 +504,48 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running Codex Usage Widget");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_5_hour_and_weekly_windows() {
+        let five_hour = parse_window(&json!({
+            "usedPercent": 25.0,
+            "windowDurationMins": 300,
+            "resetsAt": 1793605463
+        })).unwrap();
+        assert_eq!(five_hour.label, "5 hour");
+        assert_eq!(five_hour.used_percent, 25.0);
+        assert_eq!(five_hour.left_percent, 75.0);
+
+        let weekly = parse_window(&json!({
+            "usedPercent": 80.5,
+            "windowDurationMins": 10080,
+            "resetsAt": 1793866617
+        })).unwrap();
+        assert_eq!(weekly.label, "Weekly");
+        assert_eq!(weekly.used_percent, 80.5);
+        assert_eq!(weekly.left_percent, 19.5);
+    }
+
+    #[test]
+    fn formats_friendly_auth_and_rate_limit_errors() {
+        let auth_err = "failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized; body={\"error\":{\"message\":\"Could not parse your authentication token. Please try signing in again.\"}}";
+        let formatted = format_codex_error(auth_err, "");
+        assert!(formatted.contains("Codex login expired or invalid"));
+
+        let rate_err = "429 Too Many Requests: rate limit exceeded";
+        let formatted_rate = format_codex_error(rate_err, "");
+        assert!(formatted_rate.contains("Codex rate limit reached"));
+    }
+
+    #[test]
+    fn codex_binary_resolution_finds_available_path() {
+        let bin = find_codex_binary();
+        assert!(!bin.as_os_str().is_empty());
+    }
 }

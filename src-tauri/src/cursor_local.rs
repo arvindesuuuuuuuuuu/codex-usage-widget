@@ -14,10 +14,13 @@ pub(super) fn read_cookie(path: &Path, now: u64) -> Result<Option<String>, Strin
         Ok(true) => {}
         Err(_) => return Err("Cursor's local sign-in storage is not accessible.".into()),
     }
-    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|_| "Could not open Cursor's local sign-in storage. Try again after Cursor finishes starting.".to_string())?;
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .map_err(|e| format!("Could not open Cursor's local sign-in storage: {e}"))?;
     connection
-        .busy_timeout(Duration::from_millis(500))
+        .busy_timeout(Duration::from_millis(2000))
         .map_err(|_| INVALID.to_string())?;
     let token = read_token(&connection)?;
     token
@@ -78,16 +81,18 @@ fn token_cookie(token: &str, now: u64) -> Result<String, String> {
     let parts: Vec<_> = token.split('.').collect();
     if parts.len() != 3
         || parts.iter().any(|part| {
-            part.is_empty()
-                || !part
+            let p = part.trim_end_matches('=');
+            p.is_empty()
+                || !p
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         })
     {
         return Err(INVALID.into());
     }
+    let payload_str = parts[1].trim_end_matches('=');
     let payload = URL_SAFE_NO_PAD
-        .decode(parts[1])
+        .decode(payload_str)
         .map_err(|_| INVALID.to_string())?;
     let claims: Value = serde_json::from_slice(&payload).map_err(|_| INVALID.to_string())?;
     // This is expiry/shape checking only. Cursor verifies the token's signature.
@@ -103,7 +108,7 @@ fn token_cookie(token: &str, now: u64) -> Result<String, String> {
         .ok_or(INVALID)?;
     if !user
         .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b'@' | b'+'))
     {
         return Err(INVALID.into());
     }

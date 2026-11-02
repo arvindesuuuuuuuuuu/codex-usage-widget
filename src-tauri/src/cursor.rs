@@ -14,9 +14,16 @@ pub struct CursorUsage {
     fetched_at: u64,
     plan_type: Option<String>,
     resets_at: Option<i64>,
+    billing_cycle_start: Option<i64>,
     windows: Vec<super::UsageWindow>,
     on_demand_used_usd: Option<f64>,
     on_demand_limit_usd: Option<f64>,
+    total_requests_used: Option<u64>,
+    total_requests_limit: Option<u64>,
+    total_requests_remaining: Option<u64>,
+    bonus_requests: Option<u64>,
+    auto_model_display_message: Option<String>,
+    named_model_display_message: Option<String>,
 }
 
 #[derive(Default)]
@@ -104,6 +111,16 @@ fn number(value: Option<&Value>) -> Option<f64> {
         .filter(|v| v.is_finite() && *v >= 0.0)
 }
 
+fn normalize_cursor_percent(raw: f64) -> f64 {
+    // Cursor API returns decimal ratios where 1.0 represents 100% (e.g. 0.10666 = 10.67%, 0.36 = 36%).
+    // If raw <= 2.0, scale by 100. If already > 2.0 (e.g. 50.0, 110.0), treat as already on percentage scale.
+    if raw <= 2.0 {
+        raw * 100.0
+    } else {
+        raw
+    }
+}
+
 fn parse_summary(value: &Value) -> Result<CursorUsage, String> {
     let plan = value.pointer("/individualUsage/plan");
     let resets_at = value
@@ -111,17 +128,24 @@ fn parse_summary(value: &Value) -> Result<CursorUsage, String> {
         .and_then(Value::as_str)
         .and_then(|date| OffsetDateTime::parse(date, &Rfc3339).ok())
         .map(|date| date.unix_timestamp());
+    let billing_cycle_start = value
+        .get("billingCycleStart")
+        .and_then(Value::as_str)
+        .and_then(|date| OffsetDateTime::parse(date, &Rfc3339).ok())
+        .map(|date| date.unix_timestamp());
+
     let mut windows = Vec::new();
     if let Some(plan) = plan {
         for (field, label) in [
             ("autoPercentUsed", "Cursor models"),
             ("apiPercentUsed", "Other models"),
         ] {
-            if let Some(used) = number(plan.get(field)) {
+            if let Some(raw_used) = number(plan.get(field)) {
+                let used_percent = normalize_cursor_percent(raw_used);
                 windows.push(super::UsageWindow {
                     label: label.into(),
-                    used_percent: used,
-                    left_percent: (100.0 - used).clamp(0.0, 100.0),
+                    used_percent,
+                    left_percent: (100.0 - used_percent).clamp(0.0, 100.0),
                     window_duration_mins: None,
                     resets_at,
                 });
@@ -129,7 +153,7 @@ fn parse_summary(value: &Value) -> Result<CursorUsage, String> {
         }
         // Prefer the explicit pools. Never invent an average or assume missing usage is zero.
         if windows.is_empty() {
-            let percent = number(plan.get("totalPercentUsed")).or_else(|| {
+            let percent = number(plan.get("totalPercentUsed")).map(normalize_cursor_percent).or_else(|| {
                 let used = number(plan.get("used"))?;
                 let limit = number(plan.get("limit"))?;
                 (limit > 0.0).then_some(used / limit * 100.0)
@@ -152,6 +176,21 @@ fn parse_summary(value: &Value) -> Result<CursorUsage, String> {
     if windows.is_empty() && on_demand_used_usd.is_none() {
         return Err("Cursor returned no supported personal usage data. Check your Cursor dashboard; its response format may have changed.".into());
     }
+
+    let total_requests_used = plan.and_then(|p| p.get("used")).and_then(Value::as_u64);
+    let total_requests_limit = plan.and_then(|p| p.get("limit")).and_then(Value::as_u64);
+    let total_requests_remaining = plan.and_then(|p| p.get("remaining")).and_then(Value::as_u64);
+    let bonus_requests = plan.and_then(|p| p.pointer("/breakdown/bonus")).and_then(Value::as_u64);
+
+    let auto_model_display_message = value
+        .get("autoModelSelectedDisplayMessage")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let named_model_display_message = value
+        .get("namedModelSelectedDisplayMessage")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
     Ok(CursorUsage {
         auth_source: "web".into(),
         fetched_at: super::now_epoch(),
@@ -160,10 +199,54 @@ fn parse_summary(value: &Value) -> Result<CursorUsage, String> {
             .and_then(Value::as_str)
             .map(str::to_owned),
         resets_at,
+        billing_cycle_start,
         windows,
         on_demand_used_usd,
         on_demand_limit_usd,
+        total_requests_used,
+        total_requests_limit,
+        total_requests_remaining,
+        bonus_requests,
+        auto_model_display_message,
+        named_model_display_message,
     })
+}
+
+fn find_cursor_state_vscdb(app: &AppHandle) -> Result<Option<std::path::PathBuf>, String> {
+    if let Some(path) = std::env::var_os("CURSOR_USER_DATA_DIR") {
+        let base = std::path::PathBuf::from(path);
+        if !base.is_absolute() {
+            return Err("CURSOR_USER_DATA_DIR must be an absolute path to Cursor's user-data folder.".into());
+        }
+        return Ok(Some(base.join("User/globalStorage/state.vscdb")));
+    }
+
+    let default_base = app
+        .path()
+        .config_dir()
+        .map_err(|_| "Could not locate Cursor's user data.")?
+        .join("Cursor");
+    let default_db = default_base.join("User/globalStorage/state.vscdb");
+    if default_db.exists() {
+        return Ok(Some(default_db));
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = std::path::PathBuf::from(home);
+        let candidates = [
+            home.join(".config/Cursor/User/globalStorage/state.vscdb"),
+            home.join(".var/app/com.cursor.Cursor/config/Cursor/User/globalStorage/state.vscdb"),
+            home.join("snap/cursor/current/.config/Cursor/User/globalStorage/state.vscdb"),
+        ];
+        for candidate in candidates {
+            if candidate.exists() {
+                return Ok(Some(candidate));
+            }
+        }
+    }
+
+    Ok(Some(default_db))
 }
 
 #[tauri::command]
@@ -180,22 +263,11 @@ pub async fn get_cursor_usage(
         return Err("Unknown Cursor sign-in source.".into());
     }
     let local_cookie = if source != "web" {
-        let base = match std::env::var_os("CURSOR_USER_DATA_DIR") {
-            Some(path) => std::path::PathBuf::from(path),
-            None => app
-                .path()
-                .config_dir()
-                .map_err(|_| "Could not locate Cursor's user data.")?
-                .join("Cursor"),
-        };
-        if !base.is_absolute() {
-            return Err(
-                "CURSOR_USER_DATA_DIR must be an absolute path to Cursor's user-data folder."
-                    .into(),
-            );
+        if let Some(path) = find_cursor_state_vscdb(&app)? {
+            super::cursor_local::read_cookie(&path, super::now_epoch())?
+        } else {
+            None
         }
-        let path = base.join("User/globalStorage/state.vscdb");
-        super::cursor_local::read_cookie(&path, super::now_epoch())?
     } else {
         None
     };
@@ -213,12 +285,13 @@ pub async fn get_cursor_usage(
             })?
             .into_iter()
             .filter(|cookie| {
-                matches!(
-                    cookie.name(),
-                    "WorkosCursorSessionToken"
-                        | "__Secure-next-auth.session-token"
-                        | "next-auth.session-token"
-                )
+                let name = cookie.name();
+                name == "WorkosCursorSessionToken"
+                    || name.starts_with("__Secure-next-auth.session-token")
+                    || name.starts_with("next-auth.session-token")
+                    || name.starts_with("cursor")
+                    || name.contains("session")
+                    || name.contains("token")
             })
             .map(|cookie| format!("{}={}", cookie.name(), cookie.value()))
             .collect::<Vec<_>>()
@@ -246,6 +319,7 @@ pub async fn get_cursor_usage(
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
+        .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Cursor/0.45.0 Chrome/130.0.0.0 Safari/537.36")
         .build()
         .map_err(|_| "Could not initialize the Cursor connection.")?;
     let response = client
@@ -297,11 +371,37 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(data.windows.len(), 2);
-        assert!((data.windows[0].left_percent - 99.64).abs() < 0.0001);
+        // 0.36 in Cursor decimal ratio represents 36% used, so 64% left
+        assert!((data.windows[0].left_percent - 64.0).abs() < 0.0001);
         assert_eq!(data.windows[1].left_percent, 0.0);
         assert_eq!(data.resets_at, Some(1790812800));
         assert_eq!(data.on_demand_used_usd, Some(12.34));
         assert_eq!(data.on_demand_limit_usd, Some(50.0));
+    }
+
+    #[test]
+    fn decimal_ratio_is_correctly_scaled() {
+        let data = parse_summary(&json!({
+            "billingCycleStart": "2026-10-31T11:48:50.000Z",
+            "billingCycleEnd": "2026-11-30T11:48:50.000Z",
+            "membershipType": "pro",
+            "individualUsage": {
+                "plan": {
+                    "used": 48,
+                    "limit": 2000,
+                    "remaining": 1952,
+                    "autoPercentUsed": 0.10666666666666667,
+                    "apiPercentUsed": 0.0
+                }
+            }
+        })).unwrap();
+        assert_eq!(data.windows.len(), 2);
+        // 0.106666... is ~10.67% used, so ~89.33% left
+        assert!((data.windows[0].left_percent - 89.3333).abs() < 0.01);
+        assert_eq!(data.windows[1].left_percent, 100.0);
+        assert_eq!(data.total_requests_used, Some(48));
+        assert_eq!(data.total_requests_limit, Some(2000));
+        assert_eq!(data.total_requests_remaining, Some(1952));
     }
 
     #[test]

@@ -18,6 +18,10 @@ pub struct Summary {
     pub state: String,
     pub message: String,
     pub windows: Vec<Allowance>,
+    #[serde(default)]
+    pub plan_type: Option<String>,
+    #[serde(default)]
+    pub reset_credits_count: Option<u32>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -25,6 +29,10 @@ pub struct Summary {
 pub struct Allowance {
     pub label: String,
     pub left_percent: f64,
+    #[serde(default)]
+    pub resets_at: Option<i64>,
+    #[serde(default)]
+    pub subtext: Option<String>,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -146,8 +154,8 @@ pub fn hide_to_tray(app: &AppHandle, window: &WebviewWindow) -> Result<(), Strin
         .map_err(|_| "Could not hide the usage window.".into())
 }
 
-const BAR_LOGICAL_WIDTH: f64 = 500.0;
-const BAR_LOGICAL_HEIGHT: f64 = 64.0;
+const BAR_LOGICAL_WIDTH: f64 = 420.0;
+const BAR_LOGICAL_HEIGHT: f64 = 36.0;
 
 fn status_bar_rect(
     app: &AppHandle,
@@ -211,11 +219,75 @@ pub fn enter_compact(app: &AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn enter_compact_mode(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("Unavailable in this window.".into());
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    enter_compact(&app)
+}
+
+#[tauri::command]
 pub fn restore_usage_window(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     if !matches!(window.label(), "main" | "status-bar") {
         return Err("Unavailable in this window.".into());
     }
     restore(&app)
+}
+
+#[cfg(target_os = "linux")]
+static CLICK_THROUGH: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
+pub fn apply_linux_click_through(win: &gtk::ApplicationWindow, ignore: bool) {
+    use gtk::prelude::*;
+    if ignore {
+        let empty_region = gtk::cairo::Region::create();
+        win.input_shape_combine_region(Some(&empty_region));
+    } else {
+        win.input_shape_combine_region(None);
+    }
+}
+
+#[tauri::command]
+pub fn set_status_bar_click_through(app: AppHandle, ignore: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        CLICK_THROUGH.store(ignore, Ordering::SeqCst);
+        if let Some(bar) = app.get_webview_window("status-bar") {
+            if let Ok(win) = bar.gtk_window() {
+                apply_linux_click_through(&win, ignore);
+            }
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        if let Some(bar) = app.get_webview_window("status-bar") {
+            let _ = bar.set_ignore_cursor_events(ignore);
+        }
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub fn start_status_bar_dragging(app: AppHandle) -> Result<(), String> {
+    if let Some(bar) = app.get_webview_window("status-bar") {
+        #[cfg(target_os = "linux")]
+        {
+            use gtk::prelude::*;
+            if let Ok(win) = bar.gtk_window() {
+                if !win.is_realized() || !win.is_visible() {
+                    return Ok(());
+                }
+            }
+        }
+        let _ = bar.start_dragging();
+    }
+    Ok(())
 }
 
 fn placement(
@@ -226,7 +298,7 @@ fn placement(
     scale: f64,
 ) -> (PhysicalPosition<i32>, LogicalSize<f64>) {
     let scale = scale.max(0.1);
-    let margin = 8.0;
+    let margin = 6.0;
     let avail_w = (width as f64 / scale) - margin * 2.0;
     let avail_h = (height as f64 / scale) - margin * 2.0;
     let bar_width = BAR_LOGICAL_WIDTH.min(avail_w).max(1.0);
@@ -285,7 +357,7 @@ fn pin_linux_bar_window(win: &gtk::ApplicationWindow, width: i32, height: i32) {
             0,
             0.0,
             0.0,
-            gtk::gdk::Gravity::North,
+            gtk::gdk::Gravity::NorthWest,
         )),
         gtk::gdk::WindowHints::MIN_SIZE
             | gtk::gdk::WindowHints::MAX_SIZE
@@ -379,6 +451,35 @@ pub fn hook_native_minimize(app: &AppHandle) {
             pin_linux_bar_window(&bar_win, width, height);
             bar_win.connect_map(move |win| {
                 pin_linux_bar_window(win, width, height);
+                apply_linux_click_through(win, CLICK_THROUGH.load(Ordering::SeqCst));
+            });
+            bar_win.add_events(
+                gtk::gdk::EventMask::ENTER_NOTIFY_MASK
+                    | gtk::gdk::EventMask::LEAVE_NOTIFY_MASK
+                    | gtk::gdk::EventMask::POINTER_MOTION_MASK,
+            );
+
+            let bar_for_enter = bar.clone();
+            bar_win.connect_enter_notify_event(move |_, event| {
+                if event.detail() != gtk::gdk::NotifyType::Inferior {
+                    let _ = bar_for_enter.emit("status-bar-hover", true);
+                }
+                gtk::glib::Propagation::Proceed
+            });
+
+            let bar_for_leave = bar.clone();
+            bar_win.connect_leave_notify_event(move |_, event| {
+                if event.detail() != gtk::gdk::NotifyType::Inferior {
+                    let _ = bar_for_leave.emit("status-bar-hover", false);
+                    let _ = bar_for_leave.emit("status-bar-leave", ());
+                }
+                gtk::glib::Propagation::Proceed
+            });
+
+            let bar_for_motion = bar.clone();
+            bar_win.connect_motion_notify_event(move |_, _| {
+                let _ = bar_for_motion.emit("status-bar-hover", true);
+                gtk::glib::Propagation::Proceed
             });
         }
     }
@@ -456,22 +557,22 @@ mod tests {
     #[test]
     fn centers_in_the_current_monitors_work_area_with_dpi() {
         let (position, size) = placement(-2560, 40, 2560, 1400, 1.5);
-        assert_eq!(size, LogicalSize::new(500.0, 64.0));
-        assert_eq!(position, PhysicalPosition::new(-1655, 52));
+        assert_eq!(size, LogicalSize::new(420.0, 36.0));
+        assert_eq!(position, PhysicalPosition::new(-1595, 49));
     }
     #[test]
     fn uses_the_same_logical_size_as_windows() {
         let (_, size) = placement(0, 0, 1920, 1080, 1.0);
-        assert_eq!(size, LogicalSize::new(500.0, 64.0));
+        assert_eq!(size, LogicalSize::new(420.0, 36.0));
         let (_, scaled) = placement(0, 0, 3840, 2160, 2.0);
-        assert_eq!(scaled, LogicalSize::new(500.0, 64.0));
+        assert_eq!(scaled, LogicalSize::new(420.0, 36.0));
     }
     #[test]
     fn fits_narrow_screens() {
         let (position, size) = placement(0, 0, 320, 240, 1.0);
-        assert_eq!(position.x, 8);
-        assert_eq!(size.width, 304.0);
-        assert_eq!(size.height, 64.0);
+        assert_eq!(position.x, 6);
+        assert_eq!(size.width, 308.0);
+        assert_eq!(size.height, 36.0);
         assert!(position.y + (size.height as i32) <= 240);
     }
     #[test]
