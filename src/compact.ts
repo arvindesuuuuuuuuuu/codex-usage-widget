@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { Summary } from './usage-summary';
-import { loadSettings, type WidgetSettings } from './settings';
+import { loadSettings, saveSettings, type WidgetSettings } from './settings';
 
 const CODEX_ICON = `<svg class="brand-svg codex" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z"/></svg>`;
 const CURSOR_ICON = `<svg class="brand-svg cursor" viewBox="0 0 24 24" fill="currentColor"><path d="M4 3L17 12L11 13.5L14.5 20.5L12 21.5L8.5 14.5L4 18V3Z"/></svg>`;
@@ -44,6 +44,7 @@ const creditsCount = document.querySelector<HTMLElement>('#compact-credits-count
 const restoreBtn = document.querySelector<HTMLElement>('#restore-btn')!;
 
 let currentSettings: WidgetSettings = loadSettings();
+let lastSummary: Summary | null = null;
 let revision = -1;
 let isHovered = false;
 
@@ -75,6 +76,24 @@ document.addEventListener('visibilitychange', () => {
 
 function applySettings(settings: WidgetSettings) {
   currentSettings = settings;
+
+  // Apply position classes and dataset
+  const isVert = settings.position === 'left' || settings.position === 'right';
+  if (isVert) {
+    wrapper.classList.add('is-vertical');
+    pill.classList.add('is-vertical');
+  } else {
+    wrapper.classList.remove('is-vertical');
+    pill.classList.remove('is-vertical');
+  }
+  wrapper.dataset.position = settings.position;
+  pill.dataset.position = settings.position;
+
+  if (lastSummary) {
+    render(lastSummary);
+  }
+
+  void invoke('set_status_bar_position', { position: settings.position }).catch(() => {});
 
   // Apply separate normal and hover opacity variables
   document.documentElement.style.setProperty('--normal-opacity', String(settings.normalOpacity / 100));
@@ -185,8 +204,11 @@ function formatCountdown(resetsAt?: number | null): string {
 }
 
 function render(summary: Summary) {
-  if (summary.revision < revision) return;
-  revision = summary.revision;
+  lastSummary = summary;
+  if (summary.revision !== undefined && summary.revision < revision) return;
+  if (summary.revision !== undefined) {
+    revision = summary.revision;
+  }
 
   const isCursor = summary.provider.toLowerCase() === 'cursor';
   label.textContent = summary.provider || 'Usage';
@@ -246,7 +268,7 @@ function render(summary: Summary) {
 
     if (countdown) {
       const time = document.createElement('span');
-      time.className = 'allowance-time';
+      time.className = 'allowance-time allowance-time-inline';
       time.textContent = countdown;
       stat.append(time);
     }
@@ -262,6 +284,17 @@ function render(summary: Summary) {
     track.append(fill);
 
     item.append(header, track);
+
+    if (countdown) {
+      const footer = document.createElement('div');
+      footer.className = 'allowance-footer';
+      const footerTime = document.createElement('span');
+      footerTime.className = 'allowance-time';
+      footerTime.textContent = countdown;
+      footer.append(footerTime);
+      item.append(footer);
+    }
+
     allowances.append(item);
   }
 }
@@ -271,6 +304,16 @@ async function start() {
   await listen<WidgetSettings>('widget-settings-changed', event => applySettings(event.payload));
   await listen('status-bar-leave', () => setHovered(false));
   await listen<boolean>('status-bar-hover', event => setHovered(event.payload));
+  await listen<string>('status-bar-position-changed', event => {
+    const pos = event.payload as WidgetSettings['position'];
+    if (pos && ['top', 'bottom', 'left', 'right'].includes(pos)) {
+      if (currentSettings.position !== pos) {
+        currentSettings.position = pos;
+        saveSettings(currentSettings);
+        applySettings(currentSettings);
+      }
+    }
+  });
   window.addEventListener('storage', () => applySettings(loadSettings()));
   render(await invoke<Summary>('get_usage_summary'));
 }

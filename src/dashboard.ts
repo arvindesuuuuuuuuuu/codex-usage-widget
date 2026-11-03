@@ -158,6 +158,38 @@ app.innerHTML = `
 
         <div class="settings-body">
           <div class="settings-section">
+            <span class="settings-section-title">Screen Placement</span>
+
+            <div class="setting-item">
+              <div class="setting-row">
+                <span class="setting-label">Position</span>
+                <span class="setting-badge" id="val-position">Top</span>
+              </div>
+              <p class="setting-help">Placement on screen. Left and Right use a compact vertical UI design.</p>
+              <div class="position-segmented" role="radiogroup" aria-label="Status Bar Position">
+                <button type="button" class="pos-btn active" data-pos="top">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M12 10v8M9 13l3-3 3 3"/></svg>
+                  <span>Top</span>
+                </button>
+                <button type="button" class="pos-btn" data-pos="bottom">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18h16M12 6v8M9 11l3 3 3-3"/></svg>
+                  <span>Bottom</span>
+                </button>
+                <button type="button" class="pos-btn" data-pos="left">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4v16M10 12h8M13 9l-3 3 3 3"/></svg>
+                  <span>Left (Vert)</span>
+                </button>
+                <button type="button" class="pos-btn" data-pos="right">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 4v16M6 12h8M11 9l3 3-3 3"/></svg>
+                  <span>Right (Vert)</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-divider"></div>
+
+          <div class="settings-section">
             <span class="settings-section-title">Opacity & Click-Through</span>
 
             <div class="setting-item">
@@ -273,6 +305,19 @@ const clickToOpenInput = document.querySelector<HTMLInputElement>('#setting-clic
 const clickThroughInput = document.querySelector<HTMLInputElement>('#setting-click-through')!;
 
 function syncSettingsUI() {
+  const valPos = document.querySelector<HTMLElement>('#val-position');
+  if (valPos) {
+    const labels: Record<string, string> = {
+      top: 'Top (Horizontal)',
+      bottom: 'Bottom (Horizontal)',
+      left: 'Left (Vertical)',
+      right: 'Right (Vertical)',
+    };
+    valPos.textContent = labels[widgetSettings.position] || 'Top (Horizontal)';
+  }
+  document.querySelectorAll<HTMLButtonElement>('.pos-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.pos === widgetSettings.position);
+  });
   normalOpacityInput.value = String(widgetSettings.normalOpacity);
   hoverOpacityInput.value = String(widgetSettings.hoverOpacity);
   valNormalOpacity.textContent = `${widgetSettings.normalOpacity}%`;
@@ -289,10 +334,22 @@ async function persistAndEmitSettings() {
       const { emit } = await import('@tauri-apps/api/event');
       await emit('widget-settings-changed', widgetSettings);
       const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('set_status_bar_position', { position: widgetSettings.position });
       await invoke('set_status_bar_click_through', { ignore: widgetSettings.clickThrough });
     } catch {}
   }
 }
+
+document.querySelectorAll<HTMLButtonElement>('.pos-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const pos = btn.dataset.pos as WidgetSettings['position'];
+    if (pos && ['top', 'bottom', 'left', 'right'].includes(pos)) {
+      widgetSettings.position = pos;
+      syncSettingsUI();
+      void persistAndEmitSettings();
+    }
+  });
+});
 
 normalOpacityInput.addEventListener('input', () => {
   widgetSettings.normalOpacity = Number(normalOpacityInput.value);

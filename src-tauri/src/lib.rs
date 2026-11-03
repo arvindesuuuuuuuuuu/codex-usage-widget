@@ -449,7 +449,8 @@ pub fn run() {
             status_bar::restore_usage_window,
             status_bar::enter_compact_mode,
             status_bar::set_status_bar_click_through,
-            status_bar::start_status_bar_dragging
+            status_bar::start_status_bar_dragging,
+            status_bar::set_status_bar_position
         ])
         .setup(|app| {
             let show = MenuItemBuilder::with_id("show", "Show Code Usage").build(app)?;

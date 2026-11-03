@@ -1,9 +1,12 @@
+export type StatusBarPosition = 'top' | 'bottom' | 'left' | 'right';
+
 export type WidgetSettings = {
   normalOpacity: number; // 20 - 100
   hoverOpacity: number;  // 5 - 100
   draggable: boolean;
   clickToOpen: boolean;
   clickThrough: boolean;
+  position: StatusBarPosition;
 };
 
 export const DEFAULT_SETTINGS: WidgetSettings = {
@@ -12,6 +15,7 @@ export const DEFAULT_SETTINGS: WidgetSettings = {
   draggable: false,
   clickToOpen: false,
   clickThrough: false,
+  position: 'top',
 };
 
 export function loadSettings(): WidgetSettings {
@@ -19,6 +23,7 @@ export function loadSettings(): WidgetSettings {
     const raw = localStorage.getItem('widget-settings');
     if (raw) {
       const parsed = JSON.parse(raw);
+      const pos = parsed.position;
       return {
         normalOpacity: typeof parsed.normalOpacity === 'number'
           ? Math.max(20, Math.min(100, Math.round(parsed.normalOpacity)))
@@ -35,6 +40,9 @@ export function loadSettings(): WidgetSettings {
         clickThrough: typeof parsed.clickThrough === 'boolean'
           ? parsed.clickThrough
           : DEFAULT_SETTINGS.clickThrough,
+        position: (pos === 'top' || pos === 'bottom' || pos === 'left' || pos === 'right')
+          ? pos
+          : DEFAULT_SETTINGS.position,
       };
     }
   } catch {}
